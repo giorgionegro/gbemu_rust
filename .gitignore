@@ -1,0 +1,4 @@
+/target
+# ignore all the .gb files
+*.gb
+*.cpp
