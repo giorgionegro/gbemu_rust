@@ -90,6 +90,7 @@ impl Registers {
             'h' => tmp.hl >> 8,
             'l' => tmp.hl & 0xFF,
             'f' => tmp.af & 0xFF,
+            'i' => tmp.ime as u16,
             _ => 0,
         }) as u8
     }
@@ -120,6 +121,7 @@ impl Registers {
             'h' => self.hl = (tmp.hl & 0xFF) | ((value as u16) << 8),
             'l' => self.hl = (tmp.hl & 0xFF00) | value as u16,
             'f' => self.af = (tmp.af & 0xFF00) | value as u16,
+            'i' => self.ime = value,
             _ => (),
         }
     }
@@ -151,7 +153,7 @@ fn read_memory_8(mem: &Memory, rom: &Rom, address: u16) -> u8 {
 fn read_memory_16(mem: &Memory, rom: &Rom, address: u16) -> u16 {
     let x = read_memory_8(mem, rom, address);
     let y = read_memory_8(mem, rom, address + 1);
-    ((x as u16) << 8) | y as u16
+    (y as u16) << 8 | x as u16
 }
 
 fn write_to_rom_register(rom: &mut Rom, address: u16, value: u8) {
@@ -297,6 +299,18 @@ fn ld_m_n(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
     write_memory_8(mem, rom, regs.read_register_16("hl"), value);
 }
 
+fn pop(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    let value = read_memory_16(mem, rom, regs.read_register_16("sp"));
+    regs.write_register_16(reg, value);
+    regs.write_register_16("sp", regs.clone().read_register_16("sp") + 2);
+}
+
+fn push(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    let value = regs.read_register_16(reg);
+    regs.write_register_16("sp", regs.clone().read_register_16("sp") - 2);
+    write_memory_16(mem, rom, regs.read_register_16("sp"), value);
+}
+
 // incr and decr
 fn inc_r(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
     //if reg have 1 char, it's a 8 bit register
@@ -331,7 +345,7 @@ fn dec_m(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
 }
 
 //rotate and shift
-fn rlca(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+fn rlca(regs: &mut Registers) {
     let value = regs.read_register_8('a').clone();
     let msb = value & 0x80;
     let new_value = (value << 1) | msb;
@@ -347,8 +361,8 @@ fn rlca(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
     regs.write_register_8('f', flags);
 }
 
-fn rla(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
-    let value = regs.read_register_8('a').clone();
+fn rla(regs: &mut Registers) {
+    let value = regs.read_register_8('a');
     let msb = value & 0x80;
     let new_value = (value << 1) | ((regs.read_register_8('f') & CARRY_FLAG) >> 4);
     regs.write_register_8('a', new_value);
@@ -362,8 +376,8 @@ fn rla(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
 
     regs.write_register_8('f', flags);
 }
-fn rrca(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
-    let value = regs.read_register_8('a').clone();
+fn rrca(regs: &mut Registers) {
+    let value = regs.read_register_8('a');
     let lsb = value & 0x01;
     let new_value = (value >> 1) | (lsb << 7);
     regs.write_register_8('a', new_value);
@@ -378,7 +392,7 @@ fn rrca(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
     regs.write_register_8('f', flags);
 }
 fn rra(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
-    let value = regs.read_register_8('a').clone();
+    let value = regs.read_register_8('a');
     let lsb = value & 0x01;
     let new_value = (value >> 1) | ((regs.read_register_8('f') & CARRY_FLAG) << 3);
     regs.write_register_8('a', new_value);
@@ -393,10 +407,10 @@ fn rra(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
     regs.write_register_8('f', flags);
 }
 
-//arithmetic
+//arithmetic and logic
 fn add_hl(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
-    let value = regs.read_register_16(reg).clone();
-    let hl = regs.read_register_16("hl").clone();
+    let value = regs.read_register_16(reg);
+    let hl = regs.read_register_16("hl");
     let result: u32 = value as u32 + hl as u32;
     regs.write_register_16("hl", result as u16);
     let mut flags = regs.read_register_8('f');
@@ -413,6 +427,234 @@ fn add_hl(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
     regs.write_register_8('f', flags);
 }
 
+fn add_a_r(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
+    let value = if reg.len() > 1 {
+        read_memory_8(
+            mem,
+            rom,
+            regs.read_register_16(&reg.replace("(", "").replace(")", "")),
+        )
+    } else {
+        regs.read_register_8(reg.chars().next().unwrap())
+    };
+    let a = regs.read_register_8('a');
+    let result: u16 = value as u16 + a as u16;
+    regs.write_register_8('a', result as u8);
+    let mut flags = regs.read_register_8('f');
+    //reset N
+    flags &= !SUBTRACT_FLAG;
+    //set carry flag if carry from bit 7
+    if result > 0xFF {
+        flags |= CARRY_FLAG;
+    }
+    //set H flag if carry from bit 3
+    if (value & 0xF) + (a & 0xF) > 0xF {
+        flags |= HALF_CARRY_FLAG;
+    }
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn add_a_n(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+    let value = read_memory_8(mem, rom, regs.read_register_16("pc") + 1);
+    let a = regs.read_register_8('a');
+    let result: u16 = value as u16 + a as u16;
+    regs.write_register_8('a', result as u8);
+    let mut flags = regs.read_register_8('f');
+    //reset N
+    flags &= !SUBTRACT_FLAG;
+    //set carry flag if carry from bit 7
+    if result > 0xFF {
+        flags |= CARRY_FLAG;
+    }
+    //set H flag if carry from bit 3
+    if (value & 0xF) + (a & 0xF) > 0xF {
+        flags |= HALF_CARRY_FLAG;
+    }
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn adc_a_r(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
+    let value = if reg.len() > 1 {
+        read_memory_8(
+            mem,
+            rom,
+            regs.read_register_16(&reg.replace("(", "").replace(")", "")),
+        )
+    } else {
+        regs.read_register_8(reg.chars().next().unwrap())
+    };
+    let a = regs.read_register_8('a');
+    let carry = (regs.read_register_8('f') & CARRY_FLAG) >> 4;
+
+    let result: u16 = value as u16 + a as u16 + carry as u16;
+    regs.write_register_8('a', result as u8);
+    let mut flags = regs.read_register_8('f');
+    //reset N
+    flags &= !SUBTRACT_FLAG;
+    //set carry flag if carry from bit 7
+    if result > 0xFF {
+        flags |= CARRY_FLAG;
+    }
+    //set H flag if carry from bit 3
+    if (value & 0xF) + (a & 0xF) + carry > 0xF {
+        flags |= HALF_CARRY_FLAG;
+    }
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn adc_a_n(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+    let value = read_memory_8(mem, rom, regs.read_register_16("pc") + 1);
+    let a = regs.read_register_8('a');
+    let carry = (regs.read_register_8('f') & CARRY_FLAG) >> 4;
+
+    let result: u16 = value as u16 + a as u16 + carry as u16;
+    regs.write_register_8('a', result as u8);
+    let mut flags = regs.read_register_8('f');
+    //reset N
+    flags &= !SUBTRACT_FLAG;
+    //set carry flag if carry from bit 7
+    if result > 0xFF {
+        flags |= CARRY_FLAG;
+    }
+    //set H flag if carry from bit 3
+    if (value & 0xF) + (a & 0xF) + carry > 0xF {
+        flags |= HALF_CARRY_FLAG;
+    }
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result & 0xFF == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn sub_a_r(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
+    let value = if reg.len() > 1 {
+        read_memory_8(
+            mem,
+            rom,
+            regs.read_register_16(&reg.replace("(", "").replace(")", "")),
+        )
+    } else {
+        regs.read_register_8(reg.chars().next().unwrap())
+    };
+    let a = regs.read_register_8('a');
+    let result: u16 = a as u16 - value as u16;
+    regs.write_register_8('a', result as u8);
+    let mut flags = regs.read_register_8('f');
+    //set N
+    flags |= SUBTRACT_FLAG;
+    //set carry flag if carry from bit 7
+    if result > 0xFF {
+        flags |= CARRY_FLAG;
+    }
+    //set H flag if carry from bit 3
+    if (value & 0xF) > (a & 0xF) {
+        flags |= HALF_CARRY_FLAG;
+    }
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn sub_a_n(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+    let value = read_memory_8(mem, rom, regs.read_register_16("pc") + 1);
+    let a = regs.read_register_8('a');
+    let result: u16 = a as u16 - value as u16;
+    regs.write_register_8('a', result as u8);
+    let mut flags = regs.read_register_8('f');
+    //set N
+    flags |= SUBTRACT_FLAG;
+    //set carry flag if carry from bit 7
+    if result > 0xFF {
+        flags |= CARRY_FLAG;
+    }
+    //set H flag if carry from bit 3
+    if (value & 0xF) > (a & 0xF) {
+        flags |= HALF_CARRY_FLAG;
+    }
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn sbc_a_r(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
+    let value = register_or_memory(regs, mem, rom, &reg);
+    let a = regs.read_register_8('a');
+    let carry = (regs.read_register_8('f') & CARRY_FLAG) >> 4;
+
+    let result: u16 = a as u16 - value as u16 - carry as u16;
+    regs.write_register_8('a', result as u8);
+    let mut flags = regs.read_register_8('f');
+    //set N
+    flags |= SUBTRACT_FLAG;
+    //set carry flag if carry from bit 7
+    if result > 0xFF {
+        flags |= CARRY_FLAG;
+    }
+    //set H flag if carry from bit 3
+    if (value & 0xF) + carry > (a & 0xF) {
+        flags |= HALF_CARRY_FLAG;
+    }
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn sbc_a_n(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+    let value = read_memory_8(mem, rom, regs.read_register_16("pc") + 1);
+    let a = regs.read_register_8('a');
+    let carry = (regs.read_register_8('f') & CARRY_FLAG) >> 4;
+
+    let result: u16 = a as u16 - value as u16 - carry as u16;
+    regs.write_register_8('a', result as u8);
+    let mut flags = regs.read_register_8('f');
+    //set N
+    flags |= SUBTRACT_FLAG;
+    //set carry flag if carry from bit 7
+    if result > 0xFF {
+        flags |= CARRY_FLAG;
+    }
+    //set H flag if carry from bit 3
+    if (value & 0xF) + carry > (a & 0xF) {
+        flags |= HALF_CARRY_FLAG;
+    }
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
 fn daa(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
     let mut value = regs.read_register_8('a');
     let mut flags = regs.read_register_8('f');
@@ -421,43 +663,144 @@ fn daa(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
     let subtract = flags & SUBTRACT_FLAG;
     let mut correction: u16 = 0x00;
 
-    if (!subtract != 0) {
+    if !subtract != 0 {
         if half_carry != 0 || (value & 0x0F) > 0x09 {
             correction += 0x06;
         }
-        if carry != 0 || value > 0x9F {
+        if carry != 0 || value > 0x99 {
             correction += 0x60;
         }
         value = value.wrapping_add(correction as u8);
     } else {
-        if (carry != 0) {
+        if carry != 0 {
             correction += 0x60;
         }
-        if (half_carry != 0) {
+        if half_carry != 0 {
             correction += 0x06;
         }
         value = value.wrapping_sub(correction as u8);
     }
-    if correction + regs.read_register_8('a') as u16 > 0xFF {
+    if value > 0x99 {
         carry = CARRY_FLAG;
     }
-
     flags &= !ZERO_FLAG;
     if value == 0 {
         flags |= ZERO_FLAG;
     }
     flags &= !HALF_CARRY_FLAG;
 
-    flags &= !CARRY_FLAG;
     if carry != 0 {
         flags |= CARRY_FLAG;
     }
     regs.write_register_8('f', flags);
     regs.write_register_8('a', value);
 }
-fn cpl(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+
+fn cpl(regs: &mut Registers) {
     let value = regs.read_register_8('a');
     regs.write_register_8('a', !value);
+}
+
+fn and_a_r(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
+    let value = register_or_memory(regs, mem, rom, &reg);
+    let a = regs.read_register_8('a');
+    let result = a & value;
+    regs.write_register_8('a', result);
+    let mut flags = regs.read_register_8('f');
+    //set H
+    flags |= HALF_CARRY_FLAG;
+    //set N
+    flags &= !SUBTRACT_FLAG;
+    //set C
+    flags &= !CARRY_FLAG;
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn xor_a_r(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
+    let value = register_or_memory(regs, mem, rom, &reg);
+    let a = regs.read_register_8('a');
+    let result = a ^ value;
+    regs.write_register_8('a', result);
+    let mut flags = regs.read_register_8('f');
+    //set H
+    flags &= !HALF_CARRY_FLAG;
+    //set N
+    flags &= !SUBTRACT_FLAG;
+    //set C
+    flags &= !CARRY_FLAG;
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn or_a_r(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
+    let value = register_or_memory(regs, mem, rom, &reg);
+    let a = regs.read_register_8('a');
+    let result = a | value;
+    regs.write_register_8('a', result);
+    let mut flags = regs.read_register_8('f');
+    //set H
+    flags &= !HALF_CARRY_FLAG;
+    //set N
+    flags &= !SUBTRACT_FLAG;
+    //set C
+    flags &= !CARRY_FLAG;
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+fn cp_a_r(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &str) {
+    //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
+    let value = register_or_memory(regs, mem, rom, &reg);
+    let a = regs.read_register_8('a');
+    let result: u16 = a as u16 - value as u16;
+    let mut flags = regs.read_register_8('f');
+    //set N
+    flags |= SUBTRACT_FLAG;
+    //set carry flag if carry from bit 7
+    if result > 0xFF {
+        flags |= CARRY_FLAG;
+    }
+    //set H flag if carry from bit 3
+    if (value & 0xF) > (a & 0xF) {
+        flags |= HALF_CARRY_FLAG;
+    }
+    //set Z flag if result is 0
+    flags &= !ZERO_FLAG;
+    if result as u8 == 0 {
+        flags |= ZERO_FLAG;
+    }
+    regs.write_register_8('f', flags);
+}
+
+//utils
+
+fn register_or_memory(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, reg: &&str) -> u8 {
+    let value = if reg.len() > 1 {
+        read_memory_8(
+            mem,
+            rom,
+            regs.read_register_16(&reg.replace(['(', ')'], "")),
+        )
+    } else {
+        regs.read_register_8(reg.chars().next().unwrap())
+    };
+    value
 }
 
 //misc
@@ -485,8 +828,12 @@ fn ccf(regs: &mut Registers) {
     regs.write_register_8('f', flags);
 }
 
+fn call_CB(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) { //TODO change name
+                                                                    //TODO implement CB instructions
+}
+
 //flow
-fn jr_n(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+fn jr_e(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
     //temp register
     let tmp = regs.read_register_16("pc").clone() as i16;
     //read next byte
@@ -494,7 +841,35 @@ fn jr_n(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
     regs.write_register_16("pc", (tmp + value as i16) as u16);
 }
 
-fn jr_f_n(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, cflag: char, z: bool) {
+fn jr_f_e(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, cflag: char, z: bool) {
+    //get flag
+    let flag = match cflag {
+        'c' => CARRY_FLAG,
+        'z' => ZERO_FLAG,
+        _ => panic!("Invalid flag"),
+    };
+    let shift = match cflag {
+        'c' => 4,
+        'z' => 7,
+        _ => panic!("Invalid flag"),
+    };
+    //temp register
+    let tmp = regs.read_register_16("pc") as i16;
+    //read next byte
+    let value = read_memory_8(mem, rom, tmp as u16 + 1) as i8;
+    let cond = if z { 1 } else { 0 };
+    if (regs.read_register_8('f') & flag) >> shift == cond {
+        regs.write_register_16("pc", (tmp + value as i16) as u16);
+    }
+}
+
+fn jp_nn(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+    let value = read_memory_16(mem, rom, regs.read_register_16("pc") + 1) - 3;
+    //correct for the 2 bytes read
+    regs.write_register_16("pc", value);
+}
+
+fn jp_f_nn(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, cflag: char, condition: bool) {
     //get flag
     let flag = match cflag {
         'c' => CARRY_FLAG,
@@ -502,18 +877,117 @@ fn jr_f_n(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, cflag: char, z:
         _ => panic!("Invalid flag"),
     };
 
-    //temp register
-    let tmp = regs.read_register_16("pc").clone() as i16;
-    //read next byte
-    let value = read_memory_8(mem, rom, tmp.clone() as u16 + 1) as i8;
-    let cond = if z { 1 } else { 0 };
-    if regs.read_register_8('f') & flag > cond {
-        regs.write_register_16("pc", (tmp + value as i16) as u16);
+    //get shift value
+    let shift = match cflag {
+        'c' => 4,
+        'z' => 7,
+        _ => panic!("Invalid flag"),
+    };
+
+    let cond = if condition { 1 } else { 0 };
+
+    if (regs.read_register_8('f') & flag) >> shift == cond {
+        let value = read_memory_16(mem, rom, regs.clone().read_register_16("pc") + 1) - 3;
+        //correct for the 2 bytes read
+        regs.write_register_16("pc", value);
     }
 }
 
+fn call_nn(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+    let value = read_memory_16(mem, rom, regs.read_register_16("pc") + 1) - 3;
+    //correct for the 2 bytes read
+    regs.write_register_16("sp", regs.clone().read_register_16("sp") - 2);
+    write_memory_16(
+        mem,
+        rom,
+        regs.clone().read_register_16("sp"),
+        regs.clone().read_register_16("pc"),
+    );
+    regs.write_register_16("pc", value);
+}
+
+fn call_f_nn(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, cflag: char, z: bool) {
+    //get flag
+    let flag = match cflag {
+        'c' => CARRY_FLAG,
+        'z' => ZERO_FLAG,
+        _ => panic!("Invalid flag"),
+    };
+
+    //get shift value
+    let shift = match cflag {
+        'c' => 4,
+        'z' => 7,
+        _ => panic!("Invalid flag"),
+    };
+
+    let cond = if z { 1 } else { 0 };
+
+    if (regs.read_register_8('f') & flag) >> shift == cond {
+        let value = read_memory_16(mem, rom, regs.clone().read_register_16("pc") + 1) - 3;
+        //correct for the 2 bytes read
+        regs.write_register_16("sp", regs.clone().read_register_16("sp") - 2);
+        write_memory_16(
+            mem,
+            rom,
+            regs.clone().read_register_16("sp"),
+            regs.clone().read_register_16("pc") + 3,
+        );
+        regs.write_register_16("pc", value);
+    }
+}
+
+fn rst(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, value: u16) {
+    regs.write_register_16("sp", regs.clone().read_register_16("sp") - 2);
+    write_memory_16(
+        mem,
+        rom,
+        regs.clone().read_register_16("sp"),
+        regs.clone().read_register_16("pc") + 1,
+    );
+    regs.write_register_16("pc", value - 1);
+}
+
+fn ret(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+    let value = read_memory_16(mem, rom, regs.clone().read_register_16("sp"));
+    regs.write_register_16("sp", regs.clone().read_register_16("sp") + 2);
+    regs.write_register_16("pc", value - 1);
+}
+
+fn ret_f(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom, cflag: char, z: bool) {
+    //get flag
+    let flag = match cflag {
+        'c' => CARRY_FLAG,
+        'z' => ZERO_FLAG,
+        _ => panic!("Invalid flag"),
+    };
+
+    //get shift value
+    let shift = match cflag {
+        'c' => 4,
+        'z' => 7,
+        _ => panic!("Invalid flag"),
+    };
+
+    let cond = if z { 1 } else { 0 };
+
+    if (regs.read_register_8('f') & flag) >> shift == cond {
+        let value = read_memory_16(mem, rom, regs.clone().read_register_16("sp"));
+        regs.write_register_16("sp", regs.clone().read_register_16("sp") + 2);
+        regs.write_register_16("pc", value - 1);
+    }
+}
+
+fn reti(regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
+    let value = read_memory_16(mem, rom, regs.clone().read_register_16("sp"));
+    regs.write_register_16("sp", regs.clone().read_register_16("sp") + 2);
+    regs.write_register_16("pc", value - 1);
+    regs.write_register_8('i', 1);
+}
+
+//end of cpu
 fn execute(opcode: u8, regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
-    const reg_names: [&str; 8] = ["b", "c", "d", "e", "h", "l", "(hl)", "a"];
+    const REG_NAMES: [&str; 8] = ["b", "c", "d", "e", "h", "l", "(hl)", "a"];
     match opcode {
         0x00 => nop(),
         0x01 => ld_nn(regs, mem, rom, "bc"),
@@ -522,7 +996,7 @@ fn execute(opcode: u8, regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
         0x04 => inc_r(regs, mem, rom, "b"),
         0x05 => dec_r(regs, mem, rom, "b"),
         0x06 => ld_n(regs, mem, rom, "b"),
-        0x07 => rlca(regs, mem, rom),
+        0x07 => rlca(regs),
         0x08 => ld_nn(regs, mem, rom, "sp"),
         0x09 => add_hl(regs, mem, rom, "bc"),
         0x0A => ld_r1_r2(regs, mem, rom, "a", "(bc)"), //load a into (bc), bc is the memory address
@@ -530,7 +1004,7 @@ fn execute(opcode: u8, regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
         0x0C => inc_r(regs, mem, rom, "c"),
         0x0D => dec_r(regs, mem, rom, "c"),
         0x0E => ld_n(regs, mem, rom, "c"),
-        0x0F => rrca(regs, mem, rom),
+        0x0F => rrca(regs),
         0x10 => stop(),
         0x11 => ld_nn(regs, mem, rom, "de"),
         0x12 => ld_r1_r2(regs, mem, rom, "(de)", "a"), //load (de) into a, de is the memory address
@@ -538,8 +1012,8 @@ fn execute(opcode: u8, regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
         0x14 => inc_r(regs, mem, rom, "d"),
         0x15 => dec_r(regs, mem, rom, "d"),
         0x16 => ld_n(regs, mem, rom, "d"),
-        0x17 => rla(regs, mem, rom),
-        0x18 => jr_n(regs, mem, rom),
+        0x17 => rla(regs),
+        0x18 => jr_e(regs, mem, rom),
         0x19 => add_hl(regs, mem, rom, "de"),
         0x1A => ld_r1_r2(regs, mem, rom, "a", "(de)"), //load a into (de), de is the memory address
         0x1B => dec_r(regs, mem, rom, "de"),
@@ -547,7 +1021,7 @@ fn execute(opcode: u8, regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
         0x1D => dec_r(regs, mem, rom, "e"),
         0x1E => ld_n(regs, mem, rom, "e"),
         0x1F => rra(regs, mem, rom),
-        0x20 => jr_f_n(regs, mem, rom, 'z', false),
+        0x20 => jr_f_e(regs, mem, rom, 'z', false),
         0x21 => ld_nn(regs, mem, rom, "hl"),
         0x22 => {
             ld_r1_r2(regs, mem, rom, "(hl)", "a");
@@ -558,7 +1032,7 @@ fn execute(opcode: u8, regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
         0x25 => dec_r(regs, mem, rom, "h"),
         0x26 => ld_n(regs, mem, rom, "h"),
         0x27 => daa(regs, mem, rom),
-        0x28 => jr_f_n(regs, mem, rom, 'z', true),
+        0x28 => jr_f_e(regs, mem, rom, 'z', true),
         0x29 => add_hl(regs, mem, rom, "hl"),
         0x2A => {
             ld_r1_r2(regs, mem, rom, "a", "(hl)");
@@ -568,8 +1042,8 @@ fn execute(opcode: u8, regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
         0x2C => inc_r(regs, mem, rom, "l"),
         0x2D => dec_r(regs, mem, rom, "l"),
         0x2E => ld_n(regs, mem, rom, "l"),
-        0x2F => cpl(regs, mem, rom),
-        0x30 => jr_f_n(regs, mem, rom, 'c', false),
+        0x2F => cpl(regs),
+        0x30 => jr_f_e(regs, mem, rom, 'c', false),
         0x31 => ld_nn(regs, mem, rom, "sp"),
         0x32 => {
             ld_r1_r2(regs, mem, rom, "(hl)", "a");
@@ -580,7 +1054,7 @@ fn execute(opcode: u8, regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
         0x35 => dec_m(regs, mem, rom, "hl"),
         0x36 => ld_m_n(regs, mem, rom),
         0x37 => scf(regs),
-        0x38 => jr_f_n(regs, mem, rom, 'c', true),
+        0x38 => jr_f_e(regs, mem, rom, 'c', true),
         0x39 => add_hl(regs, mem, rom, "sp"),
         0x3A => {
             ld_r1_r2(regs, mem, rom, "a", "(hl)");
@@ -591,8 +1065,53 @@ fn execute(opcode: u8, regs: &mut Registers, mem: &mut Memory, rom: &mut Rom) {
         0x3D => dec_r(regs, mem, rom, "a"),
         0x3E => ld_n(regs, mem, rom, "a"),
         0x3F => ccf(regs),
-        0x40..0x47 => ld_r1_r2(regs, mem, rom, "b", reg_names[(opcode & 0x7) as usize]),
-        0x48..0x4F => ld_r1_r2(regs, mem, rom, "c", reg_names[(opcode & 0x7) as usize]),
+        0x40..0x7F => ld_r1_r2(
+            regs,
+            mem,
+            rom,
+            REG_NAMES[((opcode >> 4) - 2) as usize],
+            REG_NAMES[(opcode & 0x0f) as usize],
+        ),
+        0x80..0x87 => add_a_r(regs, mem, rom, REG_NAMES[(opcode & 0x0f) as usize]),
+        0x88..0x8F => adc_a_r(regs, mem, rom, REG_NAMES[(opcode & 0x0f) as usize]),
+        0x90..0x97 => sub_a_r(regs, mem, rom, REG_NAMES[(opcode & 0x0f) as usize]),
+        0x98..0x9F => sbc_a_r(regs, mem, rom, REG_NAMES[(opcode & 0x0f) as usize]),
+        0xA0..0xA7 => and_a_r(regs, mem, rom, REG_NAMES[(opcode & 0x0f) as usize]),
+        0xA8..0xAF => xor_a_r(regs, mem, rom, REG_NAMES[(opcode & 0x0f) as usize]),
+        0xB0..0xB7 => or_a_r(regs, mem, rom, REG_NAMES[(opcode & 0x0f) as usize]),
+        0xB8..0xBF => cp_a_r(regs, mem, rom, REG_NAMES[(opcode & 0x0f) as usize]),
+        0xC0 => ret_f(regs, mem, rom, 'z', false), //return if z flag is false
+        0xC1 => pop(regs, mem, rom, "bc"),
+        0xC2 => jp_f_nn(regs, mem, rom, 'z', false),
+        0xC3 => jp_nn(regs, mem, rom),
+        0xC4 => call_f_nn(regs, mem, rom, 'z', false),
+        0xC5 => push(regs, mem, rom, "bc"),
+        0xC6 => add_a_n(regs, mem, rom),
+        0xC7 => rst(regs, mem, rom, 0x00),
+        0xC8 => ret_f(regs, mem, rom, 'z', true), //return if z flag is true
+        0xC9 => ret(regs, mem, rom),
+        0xCA => jp_f_nn(regs, mem, rom, 'z', true),
+        0xCB => call_CB(regs, mem, rom),
+        0xCC => call_f_nn(regs, mem, rom, 'z', true),
+        0xCD => call_nn(regs, mem, rom),
+        0xCE => adc_a_n(regs, mem, rom),
+        0xCF => rst(regs, mem, rom, 0x08),
+        0xD0 => ret_f(regs, mem, rom, 'c', false), //return if c flag is false
+        0xD1 => pop(regs, mem, rom, "de"),
+        0xD2 => jp_f_nn(regs, mem, rom, 'c', false),
+        0xD3 => unimplemented!(),
+        0xD4 => call_f_nn(regs, mem, rom, 'c', false),
+        0xD5 => push(regs, mem, rom, "de"),
+        0xD6 => sub_a_n(regs, mem, rom),
+        0xD7 => rst(regs, mem, rom, 0x10),
+        0xD8 => ret_f(regs, mem, rom, 'c', true), //return if c flag is true
+        0xD9 => reti(regs, mem, rom),
+        0xDA => jp_f_nn(regs, mem, rom, 'c', true),
+        0xDB => unimplemented!(),
+        0xDC => call_f_nn(regs, mem, rom, 'c', true),
+        0xDD => unimplemented!(),
+        0xDE => sbc_a_n(regs, mem, rom),
+        0xDF => rst(regs, mem, rom, 0x18),
 
         _ => println!("Opcode not implemented: {:X}", opcode),
     }
