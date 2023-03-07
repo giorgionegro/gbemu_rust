@@ -269,12 +269,7 @@ fn ld_sp_hl(regs: &mut Registers, mem: &mut Memory) {
 
 fn ldh_n_a(regs: &mut Registers, mem: &mut Memory) {
     let value = regs.read_8('a');
-    write_memory_8(
-        mem,
-        rom,
-        0xFF00 + mem.read_8(regs.read_16("pc") + 1) as u16,
-        value,
-    );
+    mem.write_8(0xFF00 + mem.read_8(regs.read_16("pc") + 1) as u16, value);
 }
 
 fn ldh_a_n(regs: &mut Registers, mem: &mut Memory) {}
@@ -424,11 +419,7 @@ fn add_hl(regs: &mut Registers, mem: &mut Memory, reg: &str) {
 fn add_a_r(regs: &mut Registers, mem: &mut Memory, reg: &str) {
     //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
     let value = if reg.len() > 1 {
-        read_memory_8(
-            mem,
-            rom,
-            regs.read_16(&reg.replace("(", "").replace(")", "")),
-        )
+        mem.read_8(regs.read_16(&reg.replace("(", "").replace(")", "")))
     } else {
         regs.read_8(reg.chars().next().unwrap())
     };
@@ -502,11 +493,7 @@ fn add_sp_e(regs: &mut Registers, mem: &mut Memory) {
 fn adc_a_r(regs: &mut Registers, mem: &mut Memory, reg: &str) {
     //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
     let value = if reg.len() > 1 {
-        read_memory_8(
-            mem,
-            rom,
-            regs.read_16(&reg.replace("(", "").replace(")", "")),
-        )
+        mem.read_8(regs.read_16(&reg.replace("(", "").replace(")", "")))
     } else {
         regs.read_8(reg.chars().next().unwrap())
     };
@@ -563,11 +550,7 @@ fn adc_a_n(regs: &mut Registers, mem: &mut Memory) {
 fn sub_a_r(regs: &mut Registers, mem: &mut Memory, reg: &str) {
     //if reg len is greater than 1, it is a 16 bit register pointing to memory in particular hl
     let value = if reg.len() > 1 {
-        read_memory_8(
-            mem,
-            rom,
-            regs.read_16(&reg.replace("(", "").replace(")", "")),
-        )
+        mem.read_8(regs.read_16(&reg.replace("(", "").replace(")", "")))
     } else {
         regs.read_8(reg.chars().next().unwrap())
     };
